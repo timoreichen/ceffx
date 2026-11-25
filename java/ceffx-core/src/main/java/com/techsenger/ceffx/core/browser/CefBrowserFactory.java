@@ -18,4 +18,11 @@ public class CefBrowserFactory {
 //        return new CefBrowserWr(client, url, context, settings);
         return null;
     }
+
+    /** An off-screen browser that Chromium creates a popup into; it never creates a native browser itself. */
+    public static CefBrowser createPopup(CefClient client, String url, boolean isTransparent) {
+        CefBrowserOsr popup = new CefBrowserOsr(client, url, isTransparent, null, null);
+        popup.markCreatedByChromium();
+        return popup;
+    }
 }

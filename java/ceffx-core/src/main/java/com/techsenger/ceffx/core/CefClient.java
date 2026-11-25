@@ -133,6 +133,17 @@ public class CefClient extends CefClientHandler
                 this, url, isOffscreenRendered, isTransparent, context, settings);
     }
 
+    /**
+     * A browser for a popup, to return from {@link CefLifeSpanHandler#onBeforePopupBrowser}: off-screen, and
+     * it never creates a native browser of its own — Chromium creates the popup into it. Its pane can be shown
+     * like any browser's once {@link CefLifeSpanHandler#onAfterCreated} has been called for it.
+     */
+    public CefBrowser createPopupBrowser(String url, boolean isTransparent) {
+        if (isDisposed_)
+            throw new IllegalStateException("Can't create browser. CefClient is disposed");
+        return CefBrowserFactory.createPopup(this, url, isTransparent);
+    }
+
     @Override
     protected CefBrowser getBrowser(int identifier) {
         synchronized (browser_) {
@@ -518,6 +529,15 @@ public class CefClient extends CefClientHandler
         if (lifeSpanHandler_ != null && browser != null)
             return lifeSpanHandler_.onBeforePopup(browser, frame, target_url, target_frame_name);
         return false;
+    }
+
+    @Override
+    public CefBrowser onBeforePopupBrowser(CefBrowser parent, CefFrame frame, String target_url,
+            String target_frame_name, int disposition, boolean userGesture, int width, int height) {
+        if (isDisposed_ || parent == null || lifeSpanHandler_ == null)
+            return null;
+        return lifeSpanHandler_.onBeforePopupBrowser(parent, frame, target_url, target_frame_name, disposition,
+                userGesture, width, height);
     }
 
     @Override

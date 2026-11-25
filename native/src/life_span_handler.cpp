@@ -26,8 +26,46 @@ bool LifeSpanHandler::OnBeforePopup(CefRefPtr<CefBrowser> browser,
                                     CefRefPtr<CefDictionaryValue>& extra_info,
                                     bool* no_javascript_access) {
   if (browser->GetHost()->IsWindowRenderingDisabled()) {
-    // Cancel popups in off-screen rendering mode.
-    return true;
+    // Off-screen rendering: a popup is a real popup only when Java hands over the
+    // browser object for it (onBeforePopupBrowser). Chromium then creates it
+    // windowless, with this client, and keeps window.opener — what sign-in popups
+    // (Google, Apple, payment) report back through. Without such an object the
+    // popup is cancelled, as before.
+    ScopedJNIEnv env;
+    if (!env)
+      return true;
+
+    ScopedJNIBrowser jparent(env, browser);
+    ScopedJNIFrame jopener(env, frame);
+    jopener.SetTemporary();
+    ScopedJNIString jurl(env, target_url);
+    ScopedJNIString jname(env, target_frame_name);
+    jobject jpopup = nullptr;
+
+    // disposition: CEF_WOD_NEW_POPUP (5) for window.open with window features, a
+    // tab disposition for a target=_blank link; width/height 0 when not asked for.
+    JNI_CALL_METHOD(env, handle_, "onBeforePopupBrowser",
+                    "(Lcom/techsenger/ceffx/core/browser/CefBrowser;Lcom/techsenger/ceffx/core/browser/"
+                    "CefFrame;Ljava/lang/String;Ljava/lang/String;IZII)Lcom/techsenger/ceffx/core/browser/"
+                    "CefBrowser;",
+                    Object, jpopup, jparent.get(), jopener.get(), jurl.get(),
+                    jname.get(), (jint)target_disposition,
+                    user_gesture ? JNI_TRUE : JNI_FALSE,
+                    (jint)(popupFeatures.widthSet ? popupFeatures.width : 0),
+                    (jint)(popupFeatures.heightSet ? popupFeatures.height : 0));
+
+    if (jpopup == nullptr)
+      return true;
+
+    windowInfo.SetAsWindowless(kNullWindowHandle);
+    // As CefBrowser_N::create does for every browser shown in Java UI.
+    windowInfo.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
+    settings.background_color = CefColorSetARGB(255, 255, 255, 255);
+
+    // Paired with the popup in OnAfterCreated, which releases the global ref.
+    registerJBrowser(env->NewGlobalRef(jpopup));
+    env->DeleteLocalRef(jpopup);
+    return false;
   }
 
   ScopedJNIEnv env;

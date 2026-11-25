@@ -1,0 +1,159 @@
+diff --git a/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/CefClient.java b/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/CefClient.java
+index dceb56a..9999909 100644
+--- a/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/CefClient.java
++++ b/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/CefClient.java
+@@ -133,6 +133,17 @@ public class CefClient extends CefClientHandler
+                 this, url, isOffscreenRendered, isTransparent, context, settings);
+     }
+ 
++    /**
++     * A browser for a popup, to return from {@link CefLifeSpanHandler#onBeforePopupBrowser}: off-screen, and
++     * it never creates a native browser of its own — Chromium creates the popup into it. Its pane can be shown
++     * like any browser's once {@link CefLifeSpanHandler#onAfterCreated} has been called for it.
++     */
++    public CefBrowser createPopupBrowser(String url, boolean isTransparent) {
++        if (isDisposed_)
++            throw new IllegalStateException("Can't create browser. CefClient is disposed");
++        return CefBrowserFactory.createPopup(this, url, isTransparent);
++    }
++
+     @Override
+     protected CefBrowser getBrowser(int identifier) {
+         synchronized (browser_) {
+@@ -520,6 +531,15 @@ public class CefClient extends CefClientHandler
+         return false;
+     }
+ 
++    @Override
++    public CefBrowser onBeforePopupBrowser(CefBrowser parent, CefFrame frame, String target_url,
++            String target_frame_name, int disposition, boolean userGesture, int width, int height) {
++        if (isDisposed_ || parent == null || lifeSpanHandler_ == null)
++            return null;
++        return lifeSpanHandler_.onBeforePopupBrowser(parent, frame, target_url, target_frame_name, disposition,
++                userGesture, width, height);
++    }
++
+     @Override
+     public void onAfterCreated(CefBrowser browser) {
+         if (browser == null) return;
+diff --git a/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/browser/CefBrowserFactory.java b/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/browser/CefBrowserFactory.java
+index b9c7566..250a528 100644
+--- a/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/browser/CefBrowserFactory.java
++++ b/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/browser/CefBrowserFactory.java
+@@ -18,4 +18,11 @@ public class CefBrowserFactory {
+ //        return new CefBrowserWr(client, url, context, settings);
+         return null;
+     }
++
++    /** An off-screen browser that Chromium creates a popup into; it never creates a native browser itself. */
++    public static CefBrowser createPopup(CefClient client, String url, boolean isTransparent) {
++        CefBrowserOsr popup = new CefBrowserOsr(client, url, isTransparent, null, null);
++        popup.markCreatedByChromium();
++        return popup;
++    }
+ }
+diff --git a/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/browser/CefBrowser_N.java b/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/browser/CefBrowser_N.java
+index 69f0ec4..13eee71 100644
+--- a/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/browser/CefBrowser_N.java
++++ b/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/browser/CefBrowser_N.java
+@@ -207,6 +207,14 @@ abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowser {
+         isPending_ = true;
+     }
+ 
++    /**
++     * A popup's browser: Chromium creates its native side (LifeSpanHandler::OnBeforePopup), so showing its pane
++     * must not create one more.
++     */
++    final void markCreatedByChromium() {
++        isPending_ = true;
++    }
++
+     /**
+      * Create a new browser as dev tools
+      */
+diff --git a/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/handler/CefLifeSpanHandler.java b/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/handler/CefLifeSpanHandler.java
+index 88889bc..329dbb9 100644
+--- a/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/handler/CefLifeSpanHandler.java
++++ b/java/ceffx-core/src/main/java/com/techsenger/ceffx/core/handler/CefLifeSpanHandler.java
+@@ -24,6 +24,28 @@ public interface CefLifeSpanHandler {
+     boolean onBeforePopup(
+             CefBrowser browser, CefFrame frame, String target_url, String target_frame_name);
+ 
++    /**
++     * Off-screen rendering only: a page opens a popup ({@code window.open}, {@code target=_blank}). Return the
++     * browser to show it in — made with {@link com.techsenger.ceffx.core.CefClient#createPopupBrowser} — and
++     * Chromium creates the popup in it, windowless, with {@code window.opener} kept (sign-in popups report back
++     * through it). Null cancels the popup, which is what off-screen rendering always did. Called on the CEF UI
++     * thread; the returned browser's native side arrives with {@link #onAfterCreated}.
++     *
++     * @param parent the browser of the page that opens it
++     * @param disposition CEF's WindowOpenDisposition: {@link #DISPOSITION_NEW_POPUP} for {@code window.open}
++     *         with window features (a sign-in window), a tab disposition for a link with {@code target=_blank}
++     * @param userGesture whether a click or key of the user opened it
++     * @param width the width the page asked for, 0 when it did not
++     * @param height the height the page asked for, 0 when it did not
++     */
++    default CefBrowser onBeforePopupBrowser(CefBrowser parent, CefFrame frame, String target_url,
++            String target_frame_name, int disposition, boolean userGesture, int width, int height) {
++        return null;
++    }
++
++    /** CEF_WOD_NEW_POPUP: {@code window.open} with window features. */
++    int DISPOSITION_NEW_POPUP = 5;
++
+     /**
+      * Handle creation of a new browser window.
+      * @param browser The browser generating the event.
+diff --git a/native/src/life_span_handler.cpp b/native/src/life_span_handler.cpp
+index 24960e1..74863db 100644
+--- a/native/src/life_span_handler.cpp
++++ b/native/src/life_span_handler.cpp
+@@ -26,8 +26,46 @@ bool LifeSpanHandler::OnBeforePopup(CefRefPtr<CefBrowser> browser,
+                                     CefRefPtr<CefDictionaryValue>& extra_info,
+                                     bool* no_javascript_access) {
+   if (browser->GetHost()->IsWindowRenderingDisabled()) {
+-    // Cancel popups in off-screen rendering mode.
+-    return true;
++    // Off-screen rendering: a popup is a real popup only when Java hands over the
++    // browser object for it (onBeforePopupBrowser). Chromium then creates it
++    // windowless, with this client, and keeps window.opener — what sign-in popups
++    // (Google, Apple, payment) report back through. Without such an object the
++    // popup is cancelled, as before.
++    ScopedJNIEnv env;
++    if (!env)
++      return true;
++
++    ScopedJNIBrowser jparent(env, browser);
++    ScopedJNIFrame jopener(env, frame);
++    jopener.SetTemporary();
++    ScopedJNIString jurl(env, target_url);
++    ScopedJNIString jname(env, target_frame_name);
++    jobject jpopup = nullptr;
++
++    // disposition: CEF_WOD_NEW_POPUP (5) for window.open with window features, a
++    // tab disposition for a target=_blank link; width/height 0 when not asked for.
++    JNI_CALL_METHOD(env, handle_, "onBeforePopupBrowser",
++                    "(Lcom/techsenger/ceffx/core/browser/CefBrowser;Lcom/techsenger/ceffx/core/browser/"
++                    "CefFrame;Ljava/lang/String;Ljava/lang/String;IZII)Lcom/techsenger/ceffx/core/browser/"
++                    "CefBrowser;",
++                    Object, jpopup, jparent.get(), jopener.get(), jurl.get(),
++                    jname.get(), (jint)target_disposition,
++                    user_gesture ? JNI_TRUE : JNI_FALSE,
++                    (jint)(popupFeatures.widthSet ? popupFeatures.width : 0),
++                    (jint)(popupFeatures.heightSet ? popupFeatures.height : 0));
++
++    if (jpopup == nullptr)
++      return true;
++
++    windowInfo.SetAsWindowless(kNullWindowHandle);
++    // As CefBrowser_N::create does for every browser shown in Java UI.
++    windowInfo.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
++    settings.background_color = CefColorSetARGB(255, 255, 255, 255);
++
++    // Paired with the popup in OnAfterCreated, which releases the global ref.
++    registerJBrowser(env->NewGlobalRef(jpopup));
++    env->DeleteLocalRef(jpopup);
++    return false;
+   }
+ 
+   ScopedJNIEnv env;

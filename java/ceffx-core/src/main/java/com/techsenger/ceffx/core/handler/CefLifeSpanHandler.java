@@ -25,6 +25,28 @@ public interface CefLifeSpanHandler {
             CefBrowser browser, CefFrame frame, String target_url, String target_frame_name);
 
     /**
+     * Off-screen rendering only: a page opens a popup ({@code window.open}, {@code target=_blank}). Return the
+     * browser to show it in — made with {@link com.techsenger.ceffx.core.CefClient#createPopupBrowser} — and
+     * Chromium creates the popup in it, windowless, with {@code window.opener} kept (sign-in popups report back
+     * through it). Null cancels the popup, which is what off-screen rendering always did. Called on the CEF UI
+     * thread; the returned browser's native side arrives with {@link #onAfterCreated}.
+     *
+     * @param parent the browser of the page that opens it
+     * @param disposition CEF's WindowOpenDisposition: {@link #DISPOSITION_NEW_POPUP} for {@code window.open}
+     *         with window features (a sign-in window), a tab disposition for a link with {@code target=_blank}
+     * @param userGesture whether a click or key of the user opened it
+     * @param width the width the page asked for, 0 when it did not
+     * @param height the height the page asked for, 0 when it did not
+     */
+    default CefBrowser onBeforePopupBrowser(CefBrowser parent, CefFrame frame, String target_url,
+            String target_frame_name, int disposition, boolean userGesture, int width, int height) {
+        return null;
+    }
+
+    /** CEF_WOD_NEW_POPUP: {@code window.open} with window features. */
+    int DISPOSITION_NEW_POPUP = 5;
+
+    /**
      * Handle creation of a new browser window.
      * @param browser The browser generating the event.
      */

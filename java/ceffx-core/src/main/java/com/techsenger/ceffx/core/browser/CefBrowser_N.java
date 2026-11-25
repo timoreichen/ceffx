@@ -208,6 +208,14 @@ abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowser {
     }
 
     /**
+     * A popup's browser: Chromium creates its native side (LifeSpanHandler::OnBeforePopup), so showing its pane
+     * must not create one more.
+     */
+    final void markCreatedByChromium() {
+        isPending_ = true;
+    }
+
+    /**
      * Create a new browser as dev tools
      */
     protected final void createDevTools(CefBrowser_N parent, CefClientHandler clientHandler,
