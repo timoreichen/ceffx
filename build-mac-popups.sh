@@ -25,7 +25,7 @@ codesign -f -s - "$LIB"
 cd "$ROOT/java"
 mvn -q -DskipTests -pl ceffx-core,ceffx-natives install
 
-cd "$HOME/Documents/Development/jfxcef-demo/ceffx-runtime"
+cd "$HOME/Documents/Development/ceffx-runtime/ceffx-runtime"
 mvn -q -DskipTests install
 
 echo "CEFFX with popups installed. Start the client: its runtime takes the new library at the start."
