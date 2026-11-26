@@ -1,0 +1,187 @@
+# Rocketbatch build of CEFFX: the natives of all four platforms, each built on its own GitHub runner, plus
+# ceffx-core, all under one fixed version (e.g. 1.0.0-rb1), published as a GitHub Release.
+#
+#   - Push a tag named like the version (git tag 1.0.0-rb1 && git push origin 1.0.0-rb1): build + release.
+#   - "Run workflow" by hand: build with any version; it releases only when "release" is ticked.
+#
+# The release carries ceffx-rocketbatch-<version>-m2.zip: the com/techsenger/ceffx/... folders of a local Maven
+# repository (parent pom, ceffx-core, ceffx-natives with all four classifiers). phoenix/scripts/install-ceffx.sh
+# unpacks it into ~/.m2/repository; the client build then packs all four natives into the one installer.
+#
+# Based on upstream's snapshot-deploy.yml (kept in the repo root, inactive).
+name: Rocketbatch natives
+
+on:
+  push:
+    tags: [ '*-rb*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version for ceffx-core and ceffx-natives, e.g. 1.0.0-rb2'
+        required: true
+      release:
+        description: 'Publish a GitHub Release (tag = version)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: rocketbatch-natives-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-native-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache CEF distribution
+        uses: actions/cache@v4
+        with:
+          path: native/cef
+          key: cef-linux-${{ hashFiles('cef.properties') }}
+      - name: Build native code (Linux x64)
+        run: |
+          cd native && mkdir -p build && cd build
+          cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release ..
+          make -j4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: natives-linux
+          path: native/build/Release/linux
+
+  build-native-mac:
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache CEF distribution
+        uses: actions/cache@v4
+        with:
+          path: native/cef
+          key: cef-mac-x64-${{ hashFiles('cef.properties') }}
+      - name: Build native code (macOS x86_64)
+        run: |
+          cd native && mkdir -p build && cd build
+          cmake -G "Xcode" -DPROJECT_ARCH="x86_64" ..
+          xcodebuild -project ceffx.xcodeproj -configuration Release
+      - name: Strip build JDK search path, ad-hoc sign
+        run: .github/scripts/mac-fix-library.sh native/build/Release/mac/libceffx.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: natives-mac
+          path: native/build/Release/mac
+
+  build-native-mac-aarch64:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache CEF distribution
+        uses: actions/cache@v4
+        with:
+          path: native/cef
+          key: cef-mac-arm64-${{ hashFiles('cef.properties') }}
+      - name: Build native code (macOS arm64)
+        run: |
+          cd native && mkdir -p build && cd build
+          cmake -G "Xcode" -DPROJECT_ARCH="arm64" ..
+          xcodebuild -project ceffx.xcodeproj -configuration Release
+      - name: Strip build JDK search path, ad-hoc sign
+        run: .github/scripts/mac-fix-library.sh native/build/Release/mac-aarch64/libceffx.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: natives-mac-aarch64
+          path: native/build/Release/mac-aarch64
+
+  build-native-windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache CEF distribution
+        uses: actions/cache@v4
+        with:
+          path: native/cef
+          key: cef-win-x64-${{ hashFiles('cef.properties') }}
+      - name: Build native code (Windows x64)
+        shell: pwsh
+        run: |
+          cd native
+          New-Item -ItemType Directory -Force build | Out-Null
+          cd build
+          cmake -G "Visual Studio 17" -A x64 ..
+          cmake --build . --config Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: natives-windows
+          path: native/build/Release/win
+
+  package:
+    needs: [ build-native-linux, build-native-mac, build-native-mac-aarch64, build-native-windows ]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+      RELEASE: ${{ github.event_name == 'push' || inputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: natives-linux
+          path: native/build/Release/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: natives-mac
+          path: native/build/Release/mac
+      - uses: actions/download-artifact@v4
+        with:
+          name: natives-mac-aarch64
+          path: native/build/Release/mac-aarch64
+      - uses: actions/download-artifact@v4
+        with:
+          name: natives-windows
+          path: native/build/Release/win
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: 'maven'
+      - name: Set version
+        run: |
+          [[ "$VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "bad version: $VERSION"; exit 1; }
+          cd java
+          mvn -B -q org.codehaus.mojo:versions-maven-plugin:2.18.0:set \
+              -DnewVersion="$VERSION" -DgenerateBackupPoms=false -DprocessAllModules=true
+      - name: Build ceffx-core and ceffx-natives (all four classifiers)
+        run: |
+          cd java
+          mvn -B -DskipTests -P linux,mac,mac-aarch64,windows -pl ceffx-core,ceffx-natives -am install
+      - name: Pack the local Maven repository folders
+        run: |
+          mkdir -p dist
+          ZIP="$GITHUB_WORKSPACE/dist/ceffx-rocketbatch-$VERSION-m2.zip"
+          cd ~/.m2/repository
+          zip -r "$ZIP" com/techsenger/ceffx/*/"$VERSION" -x '*_remote.repositories' -x '*maven-metadata*'
+          unzip -l "$ZIP"
+          for c in linux mac mac-aarch64 win; do
+            f="com/techsenger/ceffx/ceffx-natives/$VERSION/ceffx-natives-$VERSION-$c.jar"
+            [[ -s "$f" ]] || { echo "missing $f"; exit 1; }
+            cp "$f" "$GITHUB_WORKSPACE/dist/"
+          done
+          cd "$GITHUB_WORKSPACE/dist"
+          sha256sum "ceffx-rocketbatch-$VERSION-m2.zip" > "ceffx-rocketbatch-$VERSION-m2.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ceffx-rocketbatch-${{ env.VERSION }}
+          path: dist
+      - name: Publish GitHub Release
+        if: env.RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "CEFFX for Rocketbatch $VERSION" \
+              --notes "ceffx-core and ceffx-natives (linux, mac, mac-aarch64, win) built from $GITHUB_SHA. Install into ~/.m2 with phoenix/scripts/install-ceffx.sh."
